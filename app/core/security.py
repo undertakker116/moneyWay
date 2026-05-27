@@ -13,17 +13,14 @@ password_hash = PasswordHash.recommended()
 
 
 def hash_password(password: str) -> str:
-    """Хеширует пароль перед сохранением в БД."""
     return password_hash.hash(password)
 
 
 def verify_password(password: str, hashed_password: str) -> bool:
-    """Проверяет введенный пароль против сохраненного хеша."""
     return password_hash.verify(password, hashed_password)
 
 
 def hash_token(token: str, settings: Settings) -> str:
-    """Создает серверный HMAC-хеш refresh-токена для безопасного хранения."""
     return hmac.new(settings.secret_key.encode(), token.encode(), sha256).hexdigest()
 
 
@@ -35,7 +32,6 @@ def create_jwt_token(
     expires_delta: timedelta,
     token_id: str | None = None,
 ) -> tuple[str, str, datetime]:
-    """Создает JWT-токен нужного типа и возвращает токен, jti и срок действия."""
     now = datetime.now(UTC)
     expires_at = now + expires_delta
     jti = token_id or str(uuid4())
@@ -53,7 +49,6 @@ def create_jwt_token(
 
 
 def decode_jwt_token(token: str, *, settings: Settings, expected_type: str) -> dict:
-    """Проверяет подпись JWT, срок действия, issuer/audience и ожидаемый тип токена."""
     try:
         payload = jwt.decode(
             token,

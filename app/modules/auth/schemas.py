@@ -5,19 +5,31 @@ class RegisterRequest(BaseModel):
     email: EmailStr
     password: str = Field(min_length=8, max_length=128)
     full_name: str | None = Field(default=None, max_length=255)
+    bingx_uid: str | None = Field(default=None, min_length=3, max_length=64)
 
     model_config = ConfigDict(extra="forbid")
 
     @field_validator("password")
     @classmethod
     def validate_password_strength(cls, value: str) -> str:
-        """Проверяет минимальную сложность пароля на этапе регистрации."""
+        """Проверяет минимальную сложность пароля при регистрации."""
         if (
             value.lower() == value
             or value.upper() == value
             or not any(ch.isdigit() for ch in value)
         ):
             raise ValueError("Password must include uppercase/lowercase letters and a digit.")
+        return value
+
+    @field_validator("bingx_uid", mode="before")
+    @classmethod
+    def normalize_bingx_uid(cls, value: object) -> object:
+        """Обрезает пробелы вокруг BingX UID до основной валидации поля."""
+        if not isinstance(value, str):
+            return value
+        value = value.strip()
+        if not value:
+            return None
         return value
 
 

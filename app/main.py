@@ -1,37 +1,34 @@
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
+import asyncpg
 from fastapi import FastAPI
 from starlette.middleware.cors import CORSMiddleware
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
-import app.db.models  # noqa: F401
 from app.api.v1.router import api_router
 from app.core.config import Settings, get_settings
-from app.core.database import create_database_engine, create_session_factory
+from app.core.errors import add_exception_handlers
 from app.core.middleware import add_security_headers
-from app.db.base import Base
+from app.core.openapi import install_openapi
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
-    """Создает FastAPI-приложение, подключает БД, middleware и API-роуты."""
     app_settings = settings or get_settings()
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-        """Открывает подключение к БД на старте и закрывает его при остановке."""
-        engine = create_database_engine(app_settings.database_url)
-        app.state.db_engine = engine
-        app.state.session_factory = create_session_factory(engine)
-
-        if app_settings.auto_create_tables:
-            async with engine.begin() as connection:
-                await connection.run_sync(Base.metadata.create_all)
+        pool = await asyncpg.create_pool(
+            dsn=app_settings.database_url,
+            min_size=1,
+            max_size=10,
+        )
+        app.state.db_pool = pool
 
         try:
             yield
         finally:
-            await engine.dispose()
+            await pool.close()
 
     app = FastAPI(
         title=app_settings.app_name,
@@ -56,7 +53,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
 
     add_security_headers(app)
+    add_exception_handlers(app)
     app.include_router(api_router, prefix=app_settings.api_v1_prefix)
+    install_openapi(app)
     return app
 
 

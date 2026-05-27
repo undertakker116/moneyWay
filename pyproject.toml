@@ -1,16 +1,14 @@
 [project]
 name = "moneyway-backend"
 version = "0.1.0"
-description = "FastAPI backend for MoneyWay authentication, cabinet, and payment flow foundations."
+description = "FastAPI backend for MoneyWay authentication and cabinet."
 readme = "README.md"
 requires-python = ">=3.12,<3.15"
 dependencies = [
     "fastapi>=0.128,<0.129",
     "uvicorn[standard]>=0.38,<0.39",
     "pydantic-settings>=2.12,<3",
-    "sqlalchemy[asyncio]>=2.0.45,<3",
     "alembic>=1.17,<2",
-    "aiosqlite>=0.22,<0.23",
     "asyncpg>=0.31,<0.32",
     "PyJWT>=2.10,<3",
     "pwdlib[argon2]>=0.3,<0.4",

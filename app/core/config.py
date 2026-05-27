@@ -1,9 +1,10 @@
+from decimal import Decimal
 from functools import lru_cache
-from typing import Any
+from typing import Annotated, Any
 
 from fastapi import Request
 from pydantic import Field, field_validator, model_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
 class Settings(BaseSettings):
@@ -11,8 +12,7 @@ class Settings(BaseSettings):
     environment: str = "local"
     api_v1_prefix: str = "/api/v1"
 
-    database_url: str = "sqlite+aiosqlite:///./.local/app.db"
-    auto_create_tables: bool = False
+    database_url: str = "postgresql://moneyway:moneyway@localhost:5432/moneyway"
 
     secret_key: str = Field(default="dev-only-change-me")
     jwt_algorithm: str = "HS256"
@@ -21,8 +21,18 @@ class Settings(BaseSettings):
     access_token_expire_minutes: int = 15
     refresh_token_expire_days: int = 30
 
-    trusted_hosts: list[str] = ["localhost", "127.0.0.1", "testserver"]
-    cors_origins: list[str] = []
+    deposit_min_rub: Decimal = Decimal("5000")
+    deposit_max_rub: Decimal = Decimal("50000")
+    deposit_commission_percent: Decimal = Decimal("2")
+    rub_usdt_rate: Decimal = Decimal("100")
+
+    bingx_api_key: str | None = None
+    bingx_secret_key: str | None = None
+    bingx_base_url: str = "https://open-api.bingx.com"
+    webhook_secret: str | None = None
+
+    trusted_hosts: Annotated[list[str], NoDecode] = ["localhost", "127.0.0.1", "testserver"]
+    cors_origins: Annotated[list[str], NoDecode] = []
 
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -34,39 +44,41 @@ class Settings(BaseSettings):
     @field_validator("trusted_hosts", "cors_origins", mode="before")
     @classmethod
     def parse_csv_list(cls, value: Any) -> list[str]:
-        """Преобразует строку из env вида `a,b,c` в список значений."""
         if value is None or value == "":
             return []
         if isinstance(value, str):
             return [item.strip() for item in value.split(",") if item.strip()]
         return value
 
+    @field_validator("jwt_algorithm")
+    @classmethod
+    def validate_jwt_algorithm(cls, value: str) -> str:
+        allowed_algorithms = {"HS256", "HS384", "HS512"}
+        if value not in allowed_algorithms:
+            raise ValueError("JWT_ALGORITHM must be one of HS256, HS384, HS512.")
+        return value
+
     @property
     def is_production(self) -> bool:
-        """Проверяет, запущено ли приложение в production-окружении."""
         return self.environment.lower() == "production"
 
     @property
     def enable_docs(self) -> bool:
-        """Включает Swagger/OpenAPI только вне production."""
         return not self.is_production
 
     @model_validator(mode="after")
     def validate_secure_production_settings(self) -> "Settings":
-        """Запрещает небезопасные production-настройки при старте приложения."""
         if self.is_production and self.secret_key == "dev-only-change-me":
             raise ValueError("SECRET_KEY must be changed in production.")
-        if self.is_production and self.auto_create_tables:
-            raise ValueError("AUTO_CREATE_TABLES must be false in production; use Alembic.")
+        if self.is_production and not self.webhook_secret:
+            raise ValueError("WEBHOOK_SECRET must be set in production.")
         return self
 
 
 @lru_cache
 def get_settings() -> Settings:
-    """Читает конфигурацию из переменных окружения и `.env`, затем кеширует ее."""
     return Settings()
 
 
 def get_app_settings(request: Request) -> Settings:
-    """Возвращает настройки приложения из текущего FastAPI request."""
     return request.app.state.settings

@@ -1,16 +1,15 @@
 def auth_headers(access_token: str) -> dict[str, str]:
-    """Собирает Authorization header для защищенных endpoint-ов."""
     return {"Authorization": f"Bearer {access_token}"}
 
 
 def register_user(client, *, email: str = "user@example.com") -> dict:
-    """Регистрирует тестового пользователя и возвращает JWT-пару."""
     response = client.post(
         "/api/v1/auth/register",
         json={
             "email": email,
             "password": "StrongPass1",
             "full_name": "Test User",
+            "bingx_uid": "12345678",
         },
     )
     assert response.status_code == 201, response.text
@@ -18,7 +17,6 @@ def register_user(client, *, email: str = "user@example.com") -> dict:
 
 
 def test_register_login_refresh_logout_flow(client):
-    """Проверяет полный auth-flow: регистрация, логин, refresh rotation и logout."""
     tokens = register_user(client)
     assert tokens["token_type"] == "bearer"
     assert tokens["access_token"]
@@ -27,6 +25,7 @@ def test_register_login_refresh_logout_flow(client):
     me_response = client.get("/api/v1/users/me", headers=auth_headers(tokens["access_token"]))
     assert me_response.status_code == 200, me_response.text
     assert me_response.json()["email"] == "user@example.com"
+    assert me_response.json()["bingx_uid"] == "12345678"
 
     cabinet_response = client.get(
         "/api/v1/cabinet/me",
@@ -34,6 +33,7 @@ def test_register_login_refresh_logout_flow(client):
     )
     assert cabinet_response.status_code == 200, cabinet_response.text
     assert cabinet_response.json()["email"] == "user@example.com"
+    assert cabinet_response.json()["bingx_uid"] == "12345678"
 
     duplicate_response = client.post(
         "/api/v1/auth/register",
@@ -86,6 +86,17 @@ def test_register_login_refresh_logout_flow(client):
 
 
 def test_protected_routes_require_bearer_token(client):
-    """Проверяет, что личный кабинет закрыт без Bearer JWT."""
     response = client.get("/api/v1/cabinet/me")
     assert response.status_code == 401
+
+
+def test_blank_bingx_uid_is_not_stored(client):
+    tokens = register_user(client, email="blank-uid@example.com")
+    response = client.patch(
+        "/api/v1/users/me",
+        headers=auth_headers(tokens["access_token"]),
+        json={"bingx_uid": "   "},
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["bingx_uid"] is None

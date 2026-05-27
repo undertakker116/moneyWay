@@ -1,10 +1,3 @@
-"""Initial auth and user tables.
-
-Revision ID: 20260525_0001
-Revises:
-Create Date: 2026-05-25
-"""
-
 from collections.abc import Sequence
 
 import sqlalchemy as sa
@@ -18,12 +11,12 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
-    """Создает стартовую схему БД для пользователей и refresh-токенов."""
     op.create_table(
         "users",
         sa.Column("email", sa.String(length=320), nullable=False),
         sa.Column("password_hash", sa.String(length=255), nullable=False),
         sa.Column("full_name", sa.String(length=255), nullable=True),
+        sa.Column("bingx_uid", sa.String(length=64), nullable=True),
         sa.Column(
             "role",
             sa.Enum("USER", "ADMIN", name="user_role", native_enum=False),
@@ -39,6 +32,7 @@ def upgrade() -> None:
         sa.UniqueConstraint("email", name=op.f("uq_users_email")),
     )
     op.create_index(op.f("ix_users_email"), "users", ["email"], unique=False)
+    op.create_index(op.f("ix_users_bingx_uid"), "users", ["bingx_uid"], unique=False)
 
     op.create_table(
         "refresh_tokens",
@@ -68,10 +62,10 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    """Откатывает стартовую схему БД в обратном порядке зависимостей."""
     op.drop_index(op.f("ix_refresh_tokens_token_hash"), table_name="refresh_tokens")
     op.drop_index(op.f("ix_refresh_tokens_jwt_id"), table_name="refresh_tokens")
     op.drop_index(op.f("ix_refresh_tokens_user_id"), table_name="refresh_tokens")
     op.drop_table("refresh_tokens")
+    op.drop_index(op.f("ix_users_bingx_uid"), table_name="users")
     op.drop_index(op.f("ix_users_email"), table_name="users")
     op.drop_table("users")

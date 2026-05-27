@@ -1,1 +1,1 @@
-"""User domain module."""
+

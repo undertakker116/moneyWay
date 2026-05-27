@@ -1,48 +1,64 @@
 # MoneyWay Backend
 
-FastAPI backend для базовой аутентификации и личного кабинета.
+FastAPI backend: auth, JWT sessions, user profile, cabinet boundary.
 
-## Что Уже Есть
+## Runtime
 
-- `POST /api/v1/auth/register` - регистрация и выдача JWT-пары.
-- `POST /api/v1/auth/login` - вход по email/паролю.
-- `POST /api/v1/auth/refresh` - обновление JWT с ротацией refresh-токена.
-- `POST /api/v1/auth/logout` - отзыв refresh-токена.
-- `GET /api/v1/users/me` / `PATCH /api/v1/users/me` - профиль.
-- `GET /api/v1/cabinet/me` - профиль текущего пользователя как старт личного кабинета.
+- Python: `3.12`
+- DB: PostgreSQL via `asyncpg` and `DATABASE_URL`
+- Migrations: Alembic
+- Package/runtime: `uv`
 
+## Endpoints
 
-```bash
-cp .env.example .env
-```
+- `POST /api/v1/auth/register`
+- `POST /api/v1/auth/login`
+- `POST /api/v1/auth/refresh`
+- `POST /api/v1/auth/logout`
+- `GET /api/v1/users/me`
+- `PATCH /api/v1/users/me`
+- `GET /api/v1/cabinet/me`
+- `POST /api/v1/deposits`
+- `POST /api/v1/webhooks/sbp/payment`
+- `POST /api/v1/webhooks/sbp/chargeback`
 
-Главные переменные:
+## Config
 
-- `DATABASE_URL` - строка подключения к базе. Локально можно SQLite, на сервере обычно `postgresql+asyncpg://...`.
-- `SECRET_KEY` - ключ подписи JWT. В production должен быть длинным секретом из secret manager.
-- `AUTO_CREATE_TABLES` - по умолчанию `false`. Таблицы не создаются приложением автоматически.
-- `TRUSTED_HOSTS` - список разрешенных host.
-- `CORS_ORIGINS` - список frontend-origin.
+Config comes from environment variables. `.env.example` is only a local template.
 
-## Локальный Запуск
+Required runtime values:
+
+- `DATABASE_URL=postgresql://...`
+- `SECRET_KEY=...`
+- `JWT_ISSUER=moneyway-api`
+- `JWT_AUDIENCE=moneyway-clients`
+- `DEPOSIT_MIN_RUB=5000`
+- `DEPOSIT_MAX_RUB=50000`
+- `DEPOSIT_COMMISSION_PERCENT=2`
+- `RUB_USDT_RATE=100`
+- `BINGX_API_KEY=...`
+- `BINGX_SECRET_KEY=...`
+- `WEBHOOK_SECRET=...`
+
+## Local Commands
 
 ```bash
 uv sync --dev
 cp .env.example .env
-mkdir -p .local
 uv run alembic upgrade head
 uv run uvicorn app.main:app --reload
 ```
 
-Swagger локально: `http://127.0.0.1:8000/docs`.
-
-## Тесты И Проверки
+## Checks
 
 ```bash
-uv run pytest
 uv run ruff check .
+uv run pytest
 ```
 
-## Архитектура
+## Notes
 
-Подробно: [docs/architecture.md](/Users/user/Desktop/moneyWay/docs/architecture.md).
+- `id` fields are internal UUIDs for our database records.
+- `bingx_uid` is the user's internal account UID on BingX.
+- SQLAlchemy is used by Alembic migrations only; runtime DB access is direct `asyncpg`.
+- `app/integrations/*` contains intentional stubs and small clients for future SBP/BingX implementation.

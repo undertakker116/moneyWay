@@ -1,21 +1,18 @@
 from collections.abc import AsyncIterator
 
+import asyncpg
 from fastapi import Request
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 
-def create_database_engine(database_url: str):
-    """Создает async SQLAlchemy engine по строке подключения из `DATABASE_URL`."""
-    return create_async_engine(database_url, pool_pre_ping=True)
-
-
-def create_session_factory(engine) -> async_sessionmaker[AsyncSession]:
-    """Создает фабрику async-сессий для работы обработчиков с базой."""
-    return async_sessionmaker(engine, expire_on_commit=False, autoflush=False)
-
-
-async def get_session(request: Request) -> AsyncIterator[AsyncSession]:
-    """Выдает DB-сессию на время одного HTTP-запроса и закрывает ее после ответа."""
-    session_factory: async_sessionmaker[AsyncSession] = request.app.state.session_factory
-    async with session_factory() as session:
-        yield session
+async def get_connection(request: Request) -> AsyncIterator[asyncpg.Connection]:
+    pool: asyncpg.Pool = request.app.state.db_pool
+    async with pool.acquire() as connection:
+        transaction = connection.transaction()
+        await transaction.start()
+        try:
+            yield connection
+        except Exception:
+            await transaction.rollback()
+            raise
+        else:
+            await transaction.commit()
