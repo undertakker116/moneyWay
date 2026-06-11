@@ -1,0 +1,87 @@
+name: moneyway
+
+# Общая база для всех контейнеров из нашего образа (api, worker, migrate).
+# build определён только на api (ниже), остальные берут тот же image — иначе
+# параллельная сборка трёх сервисов с одним тегом конфликтует.
+x-app: &app
+  image: moneyway-backend:latest
+  restart: unless-stopped
+  depends_on:
+    postgres:
+      condition: service_healthy
+    migrate:
+      condition: service_completed_successfully
+  environment: &app-env
+    ENVIRONMENT: ${ENVIRONMENT:-local}
+    DATABASE_URL: postgresql://moneyway:moneyway@postgres:5432/moneyway
+    SECRET_KEY: ${SECRET_KEY:-dev-only-change-me}
+    WEBHOOK_SECRET: ${WEBHOOK_SECRET:-}
+    JWT_ISSUER: ${JWT_ISSUER:-moneyway-api}
+    JWT_AUDIENCE: ${JWT_AUDIENCE:-moneyway-clients}
+    BINGX_API_KEY: ${BINGX_API_KEY:-}
+    BINGX_SECRET_KEY: ${BINGX_SECRET_KEY:-}
+    BINGX_BASE_URL: ${BINGX_BASE_URL:-https://open-api.bingx.com}
+    BINGX_TRANSFER_HOLD_MINUTES: ${BINGX_TRANSFER_HOLD_MINUTES:-20}
+    DEPOSIT_MIN_RUB: ${DEPOSIT_MIN_RUB:-5000}
+    DEPOSIT_MAX_RUB: ${DEPOSIT_MAX_RUB:-50000}
+    DEPOSIT_COMMISSION_PERCENT: ${DEPOSIT_COMMISSION_PERCENT:-2}
+    RUB_USDT_RATE: ${RUB_USDT_RATE:-100}
+    TRUSTED_HOSTS: ${TRUSTED_HOSTS:-localhost,127.0.0.1}
+    CORS_ORIGINS: ${CORS_ORIGINS:-}
+    # Admin-панель включена в dev для демо; в проде по умолчанию выкл (см. prod-compose).
+    ADMIN_ENABLED: ${ADMIN_ENABLED:-true}
+    ADMIN_SESSION_SECRET: ${ADMIN_SESSION_SECRET:-dev-admin-session-secret}
+
+services:
+  postgres:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: moneyway
+      POSTGRES_PASSWORD: moneyway
+      POSTGRES_DB: moneyway
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U moneyway -d moneyway"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    # Порт наружу — только для локальной отладки (5433, чтобы не конфликтовать с
+    # локальным Postgres на 5432); в проде убрать.
+    ports:
+      - "127.0.0.1:5433:5432"
+
+  # Одноразовый прогон миграций до старта api/worker.
+  migrate:
+    <<: *app
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: ["alembic", "upgrade", "head"]
+
+  api:
+    <<: *app
+    build: .
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request; urllib.request.urlopen('http://localhost:8000/api/v1/health')
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # Исполнитель переводов: непрерывный, LISTEN/NOTIFY + поллинг. Масштабируется репликами.
+  worker:
+    <<: *app
+    command: ["python", "-m", "app.workers.bingx_transfers"]
+
+volumes:
+  pgdata:

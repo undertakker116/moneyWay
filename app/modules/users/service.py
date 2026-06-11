@@ -1,9 +1,11 @@
+import asyncio
 from datetime import UTC, datetime
 from uuid import uuid4
 
 import asyncpg
 
-from app.core.security import hash_password, verify_password
+from app.core.errors import ConflictError
+from app.core.security import fake_verify_password, hash_password, verify_password
 from app.modules.users.models import User, UserRole
 from app.modules.users.schemas import UserUpdateRequest
 
@@ -31,14 +33,13 @@ def user_from_record(record: asyncpg.Record | None) -> User | None:
     """Преобразует строку asyncpg из таблицы users в доменный объект User."""
     if record is None:
         return None
-    role = record["role"]
     return User(
         id=record["id"],
         email=record["email"],
         password_hash=record["password_hash"],
         full_name=record["full_name"],
         bingx_uid=record["bingx_uid"],
-        role=UserRole[role] if role in UserRole.__members__ else UserRole(role),
+        role=UserRole(record["role"]),
         is_active=record["is_active"],
         is_verified=record["is_verified"],
         created_at=record["created_at"],
@@ -73,33 +74,38 @@ async def create_user(
     full_name: str | None = None,
     bingx_uid: str | None = None,
 ) -> User:
-    """Создает пользователя с хешированным паролем и базовым role=USER."""
+    """Создаёт пользователя (role=user). Гонка по email → 409 вместо сырого 500."""
     now = datetime.now(UTC)
-    record = await connection.fetchrow(
-        f"""
-        INSERT INTO users (
-            id,
-            email,
-            password_hash,
+    # argon2 — тяжёлый CPU; в отдельном потоке, чтобы не блокировать event loop под нагрузкой.
+    password_hashed = await asyncio.to_thread(hash_password, password)
+    try:
+        record = await connection.fetchrow(
+            f"""
+            INSERT INTO users (
+                id,
+                email,
+                password_hash,
+                full_name,
+                bingx_uid,
+                role,
+                is_active,
+                is_verified,
+                created_at,
+                updated_at
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, true, false, $7, $7)
+            RETURNING {USER_COLUMNS}
+            """,
+            str(uuid4()),
+            normalize_email(email),
+            password_hashed,
             full_name,
             bingx_uid,
-            role,
-            is_active,
-            is_verified,
-            created_at,
-            updated_at
+            UserRole.USER.value,
+            now,
         )
-        VALUES ($1, $2, $3, $4, $5, $6, true, false, $7, $7)
-        RETURNING {USER_COLUMNS}
-        """,
-        str(uuid4()),
-        normalize_email(email),
-        hash_password(password),
-        full_name,
-        bingx_uid,
-        "USER",
-        now,
-    )
+    except asyncpg.UniqueViolationError as exc:
+        raise ConflictError("User with this email already exists") from exc
     user = user_from_record(record)
     assert user is not None
     return user
@@ -113,7 +119,11 @@ async def authenticate_user(
 ) -> User | None:
     """Проверяет email/password и обновляет last_login_at при успешном входе."""
     user = await get_user_by_email(connection, email)
-    if user is None or not verify_password(password, user.password_hash):
+    # argon2 verify — в отдельном потоке (CPU-bound, иначе блокирует event loop).
+    if user is None:
+        await asyncio.to_thread(fake_verify_password, password)  # тайминг против enumeration
+        return None
+    if not await asyncio.to_thread(verify_password, password, user.password_hash):
         return None
     now = datetime.now(UTC)
     record = await connection.fetchrow(

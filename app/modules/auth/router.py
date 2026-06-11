@@ -3,7 +3,9 @@ from fastapi import APIRouter, Depends, Request, status
 
 from app.core.config import Settings, get_app_settings
 from app.core.database import get_connection
-from app.core.errors import ConflictError, UnauthorizedError
+from app.core.errors import UnauthorizedError
+from app.core.http import client_ip
+from app.core.ratelimit import rate_limit
 from app.modules.auth.schemas import (
     AuthMessage,
     LoginRequest,
@@ -13,14 +15,9 @@ from app.modules.auth.schemas import (
     TokenPair,
 )
 from app.modules.auth.service import issue_token_pair, revoke_refresh_token, rotate_refresh_token
-from app.modules.users.service import authenticate_user, create_user, get_user_by_email
+from app.modules.users.service import authenticate_user, create_user
 
 router = APIRouter()
-
-
-def _request_ip(request: Request) -> str | None:
-    """Достает IP клиента из HTTP request, если Starlette смог его определить."""
-    return request.client.host if request.client else None
 
 
 @router.post(
@@ -29,6 +26,7 @@ def _request_ip(request: Request) -> str | None:
     status_code=status.HTTP_201_CREATED,
     summary="Register user",
     description="Creates a user account and returns access and refresh JWT tokens.",
+    dependencies=[Depends(rate_limit("auth_register", limit=10, window_seconds=60))],
 )
 async def register(
     payload: RegisterRequest,
@@ -36,14 +34,14 @@ async def register(
     connection: asyncpg.Connection = Depends(get_connection),
     settings: Settings = Depends(get_app_settings),
 ) -> TokenPair:
-    """Регистрирует нового пользователя и сразу выдает пару JWT-токенов."""
-    existing_user = await get_user_by_email(connection, str(payload.email))
-    if existing_user is not None:
-        raise ConflictError("User with this email already exists")
+    """Регистрирует нового пользователя и сразу выдает пару JWT-токенов.
 
+    Без отдельного pre-SELECT на занятость email: занятость ловится UniqueViolation в
+    create_user → 409. Так нет таймингового оракула (обе ветки делают одинаковую работу).
+    """
     user = await create_user(
         connection,
-        email=str(payload.email),
+        email=payload.email,
         password=payload.password,
         full_name=payload.full_name,
         bingx_uid=payload.bingx_uid,
@@ -52,7 +50,7 @@ async def register(
         connection,
         user=user,
         settings=settings,
-        ip_address=_request_ip(request),
+        ip_address=client_ip(request, settings),
         user_agent=request.headers.get("user-agent"),
     )
     return tokens
@@ -63,6 +61,7 @@ async def register(
     response_model=TokenPair,
     summary="Login",
     description="Authenticates a user by email and password and returns JWT tokens.",
+    dependencies=[Depends(rate_limit("auth_login", limit=10, window_seconds=60))],
 )
 async def login(
     payload: LoginRequest,
@@ -71,7 +70,7 @@ async def login(
     settings: Settings = Depends(get_app_settings),
 ) -> TokenPair:
     """Проверяет email/password и при успехе создает новую JWT-сессию."""
-    user = await authenticate_user(connection, email=str(payload.email), password=payload.password)
+    user = await authenticate_user(connection, email=payload.email, password=payload.password)
     if user is None or not user.is_active:
         raise UnauthorizedError("Invalid email or password")
 
@@ -79,7 +78,7 @@ async def login(
         connection,
         user=user,
         settings=settings,
-        ip_address=_request_ip(request),
+        ip_address=client_ip(request, settings),
         user_agent=request.headers.get("user-agent"),
     )
     return tokens
@@ -90,6 +89,7 @@ async def login(
     response_model=TokenPair,
     summary="Refresh tokens",
     description="Rotates a refresh token and returns a new access/refresh JWT pair.",
+    dependencies=[Depends(rate_limit("auth_refresh", limit=30, window_seconds=60))],
 )
 async def refresh_token(
     payload: RefreshTokenRequest,
@@ -102,8 +102,9 @@ async def refresh_token(
         connection,
         refresh_token=payload.refresh_token,
         settings=settings,
-        ip_address=_request_ip(request),
+        ip_address=client_ip(request, settings),
         user_agent=request.headers.get("user-agent"),
+        aux_pool=request.app.state.aux_pool,
     )
     return tokens
 

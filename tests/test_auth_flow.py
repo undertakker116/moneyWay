@@ -85,6 +85,31 @@ def test_register_login_refresh_logout_flow(client):
     assert revoked_refresh_response.status_code == 401
 
 
+def test_refresh_reuse_revokes_token_family(client):
+    tokens = register_user(client, email="reuse@example.com")
+
+    rotated = client.post(
+        "/api/v1/auth/refresh",
+        json={"refresh_token": tokens["refresh_token"]},
+    )
+    assert rotated.status_code == 200, rotated.text
+    rotated_tokens = rotated.json()
+
+    # Повтор уже отозванного токена — сигнатура кражи: возвращаем 401...
+    reuse = client.post(
+        "/api/v1/auth/refresh",
+        json={"refresh_token": tokens["refresh_token"]},
+    )
+    assert reuse.status_code == 401
+
+    # ...и отзываем всю семью, поэтому валидный ротированный токен тоже становится мёртв.
+    after_family_revoke = client.post(
+        "/api/v1/auth/refresh",
+        json={"refresh_token": rotated_tokens["refresh_token"]},
+    )
+    assert after_family_revoke.status_code == 401
+
+
 def test_protected_routes_require_bearer_token(client):
     response = client.get("/api/v1/cabinet/me")
     assert response.status_code == 401

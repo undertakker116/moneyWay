@@ -1,0 +1,84 @@
+name: moneyway
+
+# Прод-стек: тянет готовый образ из реестра (никакой сборки на сервере).
+# IMAGE задаётся в .env сервера, дефолт — образ из GHCR этого репозитория.
+# Секреты (SECRET_KEY/WEBHOOK_SECRET/BINGX_*) обязаны быть в .env — иначе при
+# ENVIRONMENT=production приложение не стартует (валидатор настроек).
+x-app: &app
+  image: ${IMAGE:-ghcr.io/undertakker116/moneyway:latest}
+  restart: always
+  depends_on:
+    postgres:
+      condition: service_healthy
+    migrate:
+      condition: service_completed_successfully
+  environment: &app-env
+    ENVIRONMENT: ${ENVIRONMENT:-production}
+    DATABASE_URL: postgresql://moneyway:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@postgres:5432/moneyway
+    SECRET_KEY: ${SECRET_KEY:?set SECRET_KEY}
+    WEBHOOK_SECRET: ${WEBHOOK_SECRET:?set WEBHOOK_SECRET}
+    JWT_ISSUER: ${JWT_ISSUER:-moneyway-api}
+    JWT_AUDIENCE: ${JWT_AUDIENCE:-moneyway-clients}
+    BINGX_API_KEY: ${BINGX_API_KEY:?set BINGX_API_KEY}
+    BINGX_SECRET_KEY: ${BINGX_SECRET_KEY:?set BINGX_SECRET_KEY}
+    BINGX_BASE_URL: ${BINGX_BASE_URL:-https://open-api.bingx.com}
+    BINGX_TRANSFER_HOLD_MINUTES: ${BINGX_TRANSFER_HOLD_MINUTES:-20}
+    DEPOSIT_MIN_RUB: ${DEPOSIT_MIN_RUB:-5000}
+    DEPOSIT_MAX_RUB: ${DEPOSIT_MAX_RUB:-50000}
+    DEPOSIT_COMMISSION_PERCENT: ${DEPOSIT_COMMISSION_PERCENT:-2}
+    RUB_USDT_RATE: ${RUB_USDT_RATE:-100}
+    TRUSTED_HOSTS: ${TRUSTED_HOSTS:?set TRUSTED_HOSTS}
+    CORS_ORIGINS: ${CORS_ORIGINS:-}
+    # Admin-панель: по умолчанию ВЫКЛ. Включать только с ограничением доступа по сети
+    # и отдельным ADMIN_SESSION_SECRET.
+    ADMIN_ENABLED: ${ADMIN_ENABLED:-false}
+    ADMIN_SESSION_SECRET: ${ADMIN_SESSION_SECRET:-}
+
+services:
+  postgres:
+    image: postgres:16
+    restart: always
+    environment:
+      POSTGRES_USER: moneyway
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      POSTGRES_DB: moneyway
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U moneyway -d moneyway"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    # Без публикации порта наружу: БД доступна только во внутренней сети compose.
+
+  migrate:
+    <<: *app
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: ["alembic", "upgrade", "head"]
+
+  api:
+    <<: *app
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    # За reverse-proxy (nginx/traefik) терминируется TLS; наружу публикуем только api.
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request; urllib.request.urlopen('http://localhost:8000/api/v1/health')
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  worker:
+    <<: *app
+    command: ["python", "-m", "app.workers.bingx_transfers"]
+
+volumes:
+  pgdata:

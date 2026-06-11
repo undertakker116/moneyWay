@@ -2,6 +2,13 @@ import json
 import re
 
 
+def test_health_and_readiness(client):
+    assert client.get("/api/v1/health").json() == {"status": "ok"}
+    ready = client.get("/api/v1/health/ready")
+    assert ready.status_code == 200, ready.text
+    assert ready.json()["status"] == "ready"
+
+
 def test_validation_errors_use_public_error_contract(client):
     response = client.post(
         "/api/v1/auth/register",

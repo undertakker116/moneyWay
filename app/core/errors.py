@@ -1,9 +1,12 @@
+import logging
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
+
+logger = logging.getLogger("app")
 
 
 class ConflictError(HTTPException):
@@ -14,6 +17,11 @@ class ConflictError(HTTPException):
 class BadRequestError(HTTPException):
     def __init__(self, detail: str) -> None:
         super().__init__(status_code=status.HTTP_400_BAD_REQUEST, detail=detail)
+
+
+class ForbiddenError(HTTPException):
+    def __init__(self, detail: str = "Forbidden") -> None:
+        super().__init__(status_code=status.HTTP_403_FORBIDDEN, detail=detail)
 
 
 class NotFoundError(HTTPException):
@@ -37,6 +45,8 @@ def error_code_for_status(status_code: int) -> str:
         status.HTTP_403_FORBIDDEN: "forbidden",
         status.HTTP_404_NOT_FOUND: "not_found",
         status.HTTP_409_CONFLICT: "conflict",
+        status.HTTP_429_TOO_MANY_REQUESTS: "rate_limited",
+        status.HTTP_503_SERVICE_UNAVAILABLE: "service_unavailable",
         422: "invalid_request",
     }.get(status_code, "request_failed")
 
@@ -89,6 +99,19 @@ async def http_exception_handler(_request: Request, exc: StarletteHTTPException)
     )
 
 
+async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+    """Любое незнакомое исключение → единый 500 без утечки внутренних деталей."""
+    logger.exception("Unhandled error on %s %s", request.method, request.url.path, exc_info=exc)
+    return JSONResponse(
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        content=public_error_response(
+            code="internal_error",
+            message="Internal server error.",
+        ),
+    )
+
+
 def add_exception_handlers(app: FastAPI) -> None:
     app.add_exception_handler(RequestValidationError, request_validation_exception_handler)
     app.add_exception_handler(StarletteHTTPException, http_exception_handler)
+    app.add_exception_handler(Exception, unhandled_exception_handler)

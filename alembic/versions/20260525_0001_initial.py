@@ -19,7 +19,7 @@ def upgrade() -> None:
         sa.Column("bingx_uid", sa.String(length=64), nullable=True),
         sa.Column(
             "role",
-            sa.Enum("USER", "ADMIN", name="user_role", native_enum=False),
+            sa.Enum("user", "admin", name="user_role", native_enum=False),
             nullable=False,
         ),
         sa.Column("is_active", sa.Boolean(), nullable=False),
@@ -39,6 +39,8 @@ def upgrade() -> None:
         sa.Column("user_id", sa.String(length=36), nullable=False),
         sa.Column("jwt_id", sa.String(length=64), nullable=False),
         sa.Column("token_hash", sa.String(length=128), nullable=False),
+        # family_id связывает всю цепочку ротаций одной сессии — для reuse-detection.
+        sa.Column("family_id", sa.String(length=36), nullable=False),
         sa.Column("expires_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("revoked_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("created_by_ip", sa.String(length=64), nullable=True),
@@ -59,9 +61,11 @@ def upgrade() -> None:
     op.create_index(op.f("ix_refresh_tokens_user_id"), "refresh_tokens", ["user_id"])
     op.create_index(op.f("ix_refresh_tokens_jwt_id"), "refresh_tokens", ["jwt_id"])
     op.create_index(op.f("ix_refresh_tokens_token_hash"), "refresh_tokens", ["token_hash"])
+    op.create_index(op.f("ix_refresh_tokens_family_id"), "refresh_tokens", ["family_id"])
 
 
 def downgrade() -> None:
+    op.drop_index(op.f("ix_refresh_tokens_family_id"), table_name="refresh_tokens")
     op.drop_index(op.f("ix_refresh_tokens_token_hash"), table_name="refresh_tokens")
     op.drop_index(op.f("ix_refresh_tokens_jwt_id"), table_name="refresh_tokens")
     op.drop_index(op.f("ix_refresh_tokens_user_id"), table_name="refresh_tokens")

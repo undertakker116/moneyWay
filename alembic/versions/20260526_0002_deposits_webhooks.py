@@ -1,6 +1,7 @@
 from collections.abc import Sequence
 
 import sqlalchemy as sa
+from sqlalchemy.dialects import postgresql
 
 from alembic import op
 
@@ -32,8 +33,14 @@ def upgrade() -> None:
             ["user_id"],
             ["users.id"],
             name=op.f("fk_transactions_user_id_users"),
+            # Финансовая история: пользователя с транзакциями удалять нельзя.
+            ondelete="RESTRICT",
         ),
         sa.PrimaryKeyConstraint("id", name=op.f("pk_transactions")),
+        sa.CheckConstraint(
+            "amount_rub > 0 AND amount_usdt > 0 AND commission >= 0",
+            name="amounts_positive",
+        ),
     )
     op.create_index(op.f("ix_transactions_user_id"), "transactions", ["user_id"])
     op.create_index(op.f("ix_transactions_status"), "transactions", ["status"])
@@ -67,7 +74,9 @@ def upgrade() -> None:
         sa.Column("amount_usdt", sa.Numeric(18, 8), nullable=False),
         sa.Column("status", sa.String(length=32), nullable=False),
         sa.Column("attempt_number", sa.Integer(), nullable=False),
-        sa.Column("bingx_response", sa.JSON(), nullable=True),
+        # Не отправлять перевод раньше scheduled_at — холд против чарджбэка.
+        sa.Column("scheduled_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("bingx_response", postgresql.JSONB(), nullable=True),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
         sa.ForeignKeyConstraint(
@@ -78,6 +87,7 @@ def upgrade() -> None:
         ),
         sa.PrimaryKeyConstraint("id", name=op.f("pk_bingx_transfers")),
         sa.UniqueConstraint("idempotency_key", name=op.f("uq_bingx_transfers_idempotency_key")),
+        sa.CheckConstraint("amount_usdt > 0", name="amount_positive"),
     )
     op.create_index(
         op.f("ix_bingx_transfers_transaction_id"),
@@ -85,6 +95,14 @@ def upgrade() -> None:
         ["transaction_id"],
     )
     op.create_index(op.f("ix_bingx_transfers_status"), "bingx_transfers", ["status"])
+    # Частичный индекс под hot-path claim воркера (FIFO по claimable-строкам), чтобы
+    # терминальные строки не раздували скан под нагрузкой.
+    op.create_index(
+        "ix_bingx_transfers_claimable",
+        "bingx_transfers",
+        ["created_at"],
+        postgresql_where=sa.text("status IN ('pending', 'processing')"),
+    )
 
     op.create_table(
         "blacklist",
@@ -105,18 +123,21 @@ def upgrade() -> None:
         sa.Column("user_id", sa.String(length=36), nullable=True),
         sa.Column("transaction_id", sa.String(length=36), nullable=True),
         sa.Column("alert_type", sa.String(length=64), nullable=False),
-        sa.Column("metadata", sa.JSON(), nullable=True),
+        sa.Column("metadata", postgresql.JSONB(), nullable=True),
         sa.Column("status", sa.String(length=32), nullable=False),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
         sa.ForeignKeyConstraint(
             ["user_id"],
             ["users.id"],
             name=op.f("fk_fraud_alerts_user_id_users"),
+            # Антифрод-улики переживают удаление: блокируем удаление связанных строк.
+            ondelete="RESTRICT",
         ),
         sa.ForeignKeyConstraint(
             ["transaction_id"],
             ["transactions.id"],
             name=op.f("fk_fraud_alerts_transaction_id_transactions"),
+            ondelete="RESTRICT",
         ),
         sa.PrimaryKeyConstraint("id", name=op.f("pk_fraud_alerts")),
     )
@@ -127,16 +148,23 @@ def upgrade() -> None:
         sa.Column("event_type", sa.String(length=64), nullable=False),
         sa.Column("user_id", sa.String(length=36), nullable=True),
         sa.Column("transaction_id", sa.String(length=36), nullable=True),
-        sa.Column("payload", sa.JSON(), nullable=True),
+        sa.Column("payload", postgresql.JSONB(), nullable=True),
         sa.Column("ip_address", sa.String(length=64), nullable=True),
         sa.Column("device_fingerprint", sa.String(length=128), nullable=True),
         sa.Column("user_agent", sa.String(length=512), nullable=True),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
-        sa.ForeignKeyConstraint(["user_id"], ["users.id"], name=op.f("fk_audit_log_user_id_users")),
+        sa.ForeignKeyConstraint(
+            ["user_id"],
+            ["users.id"],
+            name=op.f("fk_audit_log_user_id_users"),
+            # Audit-журнал неизменяем: удаление пользователя/транзакции не стирает след.
+            ondelete="RESTRICT",
+        ),
         sa.ForeignKeyConstraint(
             ["transaction_id"],
             ["transactions.id"],
             name=op.f("fk_audit_log_transaction_id_transactions"),
+            ondelete="RESTRICT",
         ),
         sa.PrimaryKeyConstraint("id", name=op.f("pk_audit_log")),
     )
@@ -151,6 +179,7 @@ def downgrade() -> None:
     op.drop_table("fraud_alerts")
     op.drop_index(op.f("ix_blacklist_value"), table_name="blacklist")
     op.drop_table("blacklist")
+    op.drop_index("ix_bingx_transfers_claimable", table_name="bingx_transfers")
     op.drop_index(op.f("ix_bingx_transfers_status"), table_name="bingx_transfers")
     op.drop_index(op.f("ix_bingx_transfers_transaction_id"), table_name="bingx_transfers")
     op.drop_table("bingx_transfers")

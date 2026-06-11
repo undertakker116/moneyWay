@@ -11,8 +11,8 @@ from app.modules.users.models import User
 from app.modules.users.service import get_user_by_id
 
 
-def _client_ip(ip_address: str | None) -> str | None:
-    """Обрезает IP клиента до размера поля перед сохранением в refresh token."""
+def _truncate_ip(ip_address: str | None) -> str | None:
+    """Обрезает уже извлечённый IP до размера поля перед сохранением в refresh token."""
     if not ip_address:
         return None
     return ip_address[:64]
@@ -32,8 +32,13 @@ async def issue_token_pair(
     settings: Settings,
     ip_address: str | None,
     user_agent: str | None,
+    family_id: str | None = None,
 ) -> TokenPair:
-    """Создает access JWT и refresh JWT, сохраняя хеш refresh token в базе."""
+    """Выдаёт пару access/refresh, хеш refresh пишет в БД.
+
+    family_id связывает ротации одной сессии (для reuse-detection): login/register —
+    новая семья, ротация переносит существующую.
+    """
     access_token, _, _ = create_jwt_token(
         subject=user.id,
         token_type="access",
@@ -54,6 +59,7 @@ async def issue_token_pair(
             user_id,
             jwt_id,
             token_hash,
+            family_id,
             expires_at,
             revoked_at,
             created_by_ip,
@@ -61,14 +67,15 @@ async def issue_token_pair(
             created_at,
             updated_at
         )
-        VALUES ($1, $2, $3, $4, $5, null, $6, $7, $8, $8)
+        VALUES ($1, $2, $3, $4, $5, $6, null, $7, $8, $9, $9)
         """,
         str(uuid4()),
         user.id,
         refresh_jti,
         hash_token(refresh_token, settings),
+        family_id or str(uuid4()),
         refresh_expires_at,
-        _client_ip(ip_address),
+        _truncate_ip(ip_address),
         _user_agent(user_agent),
         now,
     )
@@ -86,8 +93,9 @@ async def rotate_refresh_token(
     settings: Settings,
     ip_address: str | None,
     user_agent: str | None,
+    aux_pool: asyncpg.Pool,
 ) -> TokenPair:
-    """Атомарно отзывает refresh token и выдает новую пару access/refresh JWT."""
+    """Отзывает старый refresh, выдаёт новый. Повтор отозванного токена жжёт всю семью."""
     payload = decode_jwt_token(refresh_token, settings=settings, expected_type="refresh")
     token_hash = hash_token(refresh_token, settings)
     now = datetime.now(UTC)
@@ -100,7 +108,7 @@ async def rotate_refresh_token(
           AND user_id = $3
           AND revoked_at IS NULL
           AND expires_at > $4
-        RETURNING expires_at
+        RETURNING family_id
         """,
         payload["jti"],
         token_hash,
@@ -108,6 +116,13 @@ async def rotate_refresh_token(
         now,
     )
     if token_record is None:
+        await _detect_refresh_reuse(
+            aux_pool,
+            jwt_id=payload["jti"],
+            token_hash=token_hash,
+            user_id=payload["sub"],
+            now=now,
+        )
         raise UnauthorizedError("Refresh token is not active")
 
     user = await get_user_by_id(connection, payload["sub"])
@@ -120,7 +135,46 @@ async def rotate_refresh_token(
         settings=settings,
         ip_address=ip_address,
         user_agent=user_agent,
+        family_id=token_record["family_id"],
     )
+
+
+async def _detect_refresh_reuse(
+    aux_pool: asyncpg.Pool,
+    *,
+    jwt_id: str,
+    token_hash: str,
+    user_id: str,
+    now: datetime,
+) -> None:
+    """Повтор отозванного токена → отзыв всей семьи.
+
+    Отдельная транзакция из вспомогательного пула: запрос завершится 401 и откатит свою,
+    поэтому отзыв нельзя делать на той же connection; отдельный пул исключает исчерпание
+    основного при вложенном acquire под нагрузкой.
+    """
+    async with aux_pool.acquire() as connection, connection.transaction():
+        existing = await connection.fetchrow(
+            """
+            SELECT family_id, revoked_at
+            FROM refresh_tokens
+            WHERE jwt_id = $1 AND token_hash = $2 AND user_id = $3
+            """,
+            jwt_id,
+            token_hash,
+            user_id,
+        )
+        if existing is None or existing["revoked_at"] is None:
+            return
+        await connection.execute(
+            """
+            UPDATE refresh_tokens
+            SET revoked_at = $2, updated_at = $2
+            WHERE family_id = $1 AND revoked_at IS NULL
+            """,
+            existing["family_id"],
+            now,
+        )
 
 
 async def revoke_refresh_token(

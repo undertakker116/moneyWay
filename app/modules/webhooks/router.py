@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, status
 
 from app.core.config import Settings, get_app_settings
 from app.core.database import get_connection
+from app.core.ratelimit import rate_limit
 from app.modules.webhooks.schemas import SBPChargebackWebhook, SBPPaymentWebhook, WebhookResponse
 from app.modules.webhooks.service import handle_chargeback_webhook, handle_sbp_payment_webhook
 
@@ -12,9 +13,14 @@ router = APIRouter()
 
 
 def verify_webhook_secret(settings: Settings, provided_secret: str | None) -> None:
-    """Если WEBHOOK_SECRET задан, webhook без совпадающего header не принимается."""
+    """Проверка секрета вебхука. Без fail-open: нет секрета вне local/test → 503."""
     if not settings.webhook_secret:
-        return
+        if settings.is_insecure_env:
+            return
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Webhook secret is not configured",
+        )
     if provided_secret is None or not hmac.compare_digest(provided_secret, settings.webhook_secret):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -27,6 +33,7 @@ def verify_webhook_secret(settings: Settings, provided_secret: str | None) -> No
     response_model=WebhookResponse,
     summary="Handle SBP payment webhook",
     description="Stores SBP payment result, payer KYC data and schedules a BingX transfer.",
+    dependencies=[Depends(rate_limit("webhook_payment", limit=120, window_seconds=60))],
 )
 async def sbp_payment_webhook(
     payload: SBPPaymentWebhook,
@@ -36,7 +43,9 @@ async def sbp_payment_webhook(
 ) -> WebhookResponse:
     """Принимает webhook успешной/ошибочной оплаты от СБП-провайдера."""
     verify_webhook_secret(settings, x_webhook_secret)
-    await handle_sbp_payment_webhook(connection, payload=payload)
+    await handle_sbp_payment_webhook(
+        connection, payload=payload, hold_minutes=settings.bingx_transfer_hold_minutes
+    )
     return WebhookResponse(detail="accepted")
 
 
@@ -45,6 +54,7 @@ async def sbp_payment_webhook(
     response_model=WebhookResponse,
     summary="Handle SBP chargeback webhook",
     description="Marks a transaction as chargeback and records antifraud evidence.",
+    dependencies=[Depends(rate_limit("webhook_chargeback", limit=120, window_seconds=60))],
 )
 async def sbp_chargeback_webhook(
     payload: SBPChargebackWebhook,

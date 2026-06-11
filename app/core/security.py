@@ -1,5 +1,6 @@
 import hmac
 from datetime import UTC, datetime, timedelta
+from functools import lru_cache
 from hashlib import sha256
 from uuid import uuid4
 
@@ -18,6 +19,16 @@ def hash_password(password: str) -> str:
 
 def verify_password(password: str, hashed_password: str) -> bool:
     return password_hash.verify(password, hashed_password)
+
+
+@lru_cache(maxsize=1)
+def _dummy_hash() -> str:
+    return password_hash.hash("timing-equalization-placeholder")
+
+
+def fake_verify_password(password: str) -> None:
+    """Прогоняет verify против фиктивного хеша — выравнивает время при отсутствии юзера."""
+    password_hash.verify(password, _dummy_hash())
 
 
 def hash_token(token: str, settings: Settings) -> str:
@@ -56,6 +67,7 @@ def decode_jwt_token(token: str, *, settings: Settings, expected_type: str) -> d
             algorithms=[settings.jwt_algorithm],
             issuer=settings.jwt_issuer,
             audience=settings.jwt_audience,
+            leeway=timedelta(seconds=settings.jwt_leeway_seconds),
             options={"require": ["sub", "type", "jti", "exp", "iat", "iss", "aud"]},
         )
     except jwt.PyJWTError as exc:

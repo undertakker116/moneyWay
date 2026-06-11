@@ -2,7 +2,7 @@ name: Backend CI
 
 on:
   push:
-    branches: ["main"]
+    branches: ["main", "master"]
   pull_request:
 
 jobs:
@@ -28,6 +28,7 @@ jobs:
       API_V1_PREFIX: /api/v1
       DATABASE_URL: postgresql://moneyway:moneyway@localhost:5432/moneyway
       SECRET_KEY: ci-only-secret-key-change-in-production
+      WEBHOOK_SECRET: ci-only-webhook-secret
       JWT_ISSUER: moneyway-test
       JWT_AUDIENCE: moneyway-test-clients
       TRUSTED_HOSTS: localhost,127.0.0.1,testserver
@@ -55,3 +56,21 @@ jobs:
 
       - name: Run tests
         run: uv run pytest
+
+  docker-build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # Дымовая сборка образа: ловим поломку Dockerfile до мержа (без публикации).
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

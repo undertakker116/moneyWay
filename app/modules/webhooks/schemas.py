@@ -10,7 +10,7 @@ class SBPPaymentWebhook(BaseModel):
     sbp_payment_id: str | None = Field(default=None, max_length=128)
     payer_name: str | None = Field(default=None, max_length=255)
     payer_phone: str | None = Field(default=None, max_length=64)
-    amount_rub: Decimal | None = None
+    amount_rub: Decimal | None = Field(default=None, gt=0, max_digits=12, decimal_places=2)
 
     model_config = ConfigDict(extra="forbid")
 
